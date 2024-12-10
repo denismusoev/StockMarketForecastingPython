@@ -22,6 +22,7 @@ def prepare_lstm_data(data, look_back=1):
 
 @app.route('/predict', methods=['POST'])
 def predict():
+    global historical_data
     try:
         # Получаем данные из запроса
         data = request.get_json()
@@ -44,18 +45,19 @@ def predict():
         df['closePrice_scaled'] = scaler.fit_transform(df[['closePrice']])
 
         # Делим данные на обучающую и тестовую выборки (70% на обучение, 30% на тестирование)
-        train_size = int(len(df) * 0.8)
+        train_size = int(len(df) * 0.7)
         train, test = df[:train_size], df[train_size:]
 
         predictions = []
         predicted_test_list = []  # Для предсказанных тестовых данных
-        historical_data = df[['recordDate', 'closePrice']].to_dict(orient='records')  # Исторические данные
+        look_back = 3
+        historical_data = (df[['recordDate', 'closePrice']])
         rmse = None
         mae = None
 
         if model_type == 'lstm':
+            historical_data = historical_data.tail(len(historical_data[train_size:]) - look_back).to_dict(orient='records')  # Исторические данные
             # Подготовка данных для LSTM
-            look_back = 7
             train_X, train_y = prepare_lstm_data(train[['closePrice_scaled']].values, look_back)
             train_X = np.reshape(train_X, (train_X.shape[0], train_X.shape[1], 1))
 
@@ -80,8 +82,14 @@ def predict():
             ]
 
             # Вычисляем точность
-            rmse = np.sqrt(mean_squared_error(test[['closePrice']].values[look_back:], predicted_test))
-            mae = mean_absolute_error(test[['closePrice']].values[look_back:], predicted_test)
+            actual_values = test[['closePrice']].values[look_back:]
+            rmse = np.sqrt(mean_squared_error(actual_values, predicted_test))
+            mae = mean_absolute_error(actual_values, predicted_test)
+
+            # Рассчитываем RMSE и MAE в процентах от среднего значения
+            mean_value = np.mean(actual_values)
+            rmse_percent = (rmse / mean_value) * 100
+            mae_percent = (mae / mean_value) * 100
 
             # Прогнозирование на будущее
             last_sequence = train[['closePrice_scaled']].values[-look_back:]
@@ -97,6 +105,7 @@ def predict():
                 last_sequence = np.append(last_sequence[1:], [[predicted_scaled]], axis=0)
 
         else:  # Linear Regression
+            historical_data = historical_data.tail(len(historical_data[train_size:])).to_dict(orient='records')  # Исторические данные
             # Подготовка данных для линейной регрессии
             df['days_since_start'] = (df['recordDate'] - df['recordDate'].min()).dt.days
             X = df[['days_since_start']].values
@@ -116,8 +125,15 @@ def predict():
                 {"date": str(test['recordDate'].iloc[i].date()), "predicted": float(predicted_test[i])}
                 for i in range(len(predicted_test))
             ]
-            rmse = np.sqrt(mean_squared_error(y_test, predicted_test))
-            mae = mean_absolute_error(y_test, predicted_test)
+
+            actual_values = test[['closePrice']].values
+            rmse = np.sqrt(mean_squared_error(actual_values, predicted_test))
+            mae = mean_absolute_error(actual_values, predicted_test)
+
+            # Рассчитываем RMSE и MAE в процентах от среднего значения
+            mean_value = np.mean(actual_values)
+            rmse_percent = (rmse / mean_value) * 100
+            mae_percent = (mae / mean_value) * 100
 
             # Прогнозирование на будущее
             for i in range(1, data.get('dayCount', 1) + 1):
@@ -137,8 +153,8 @@ def predict():
             "predictions": predictions,
             "predicted_test": predicted_test_list,  # Прогнозы на тестовых данных
             "historical_data": historical_data,  # Исторические данные
-            "rmse": round(rmse, 2) if rmse else None,
-            "mae": round(mae, 2) if mae else None
+            "rmse": round(rmse_percent, 2) if rmse_percent else None,
+            "mae": round(mae_percent, 2) if mae_percent else None
         }
 
         return jsonify(result), 200
